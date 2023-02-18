@@ -1,1 +1,1 @@
-# diplomska-cv
+# Zyscan
