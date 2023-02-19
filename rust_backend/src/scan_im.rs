@@ -1,11 +1,12 @@
-use mongodb::{bson::doc, Client, Collection};
-use serde::{Deserialize, Serialize};
+use crate::config::AppConfig;
 use async_recursion::async_recursion;
-use log::{warn, info, error};
-use opencv::prelude::*;
+use log::{error, info, warn};
+use mongodb::{bson::doc, Client, Collection};
 use opencv::core::{Mat, Size, Vector};
-use opencv::imgcodecs::{IMREAD_UNCHANGED, imread, imwrite};
+use opencv::imgcodecs::{imread, imwrite, IMREAD_UNCHANGED};
 use opencv::imgproc::{resize, INTER_AREA};
+use opencv::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
 
@@ -13,7 +14,6 @@ const DB_NAME: &str = "zyscan";
 const COLL_NAME: &str = "images";
 const THUMBNAIL_LOCATION: &str = "./thumbnails/";
 const THUMBNAIL_SIZE: u32 = 100;
-const PYTHON_VENV_PATH: &str = "/home/gasperspagnolo/miniconda3/envs/zyscan/bin/python";
 const PYTHON_CLASSIFICATION_SCRIPT: &str = "./src_py/classify.py";
 const CLASSES_FILE: &str = "/home/gasperspagnolo/Documents/faks_git/diplomska-cv/rust_backend/assests/annotations/classes.json";
 
@@ -37,8 +37,10 @@ pub struct Image {
     pub classification_result: Vec<ClassificationResult>,
 }
 
-pub async fn load_images(path: &str, db_connection_url: &str) {
-    let client = Client::with_uri_str(db_connection_url).await.expect("failed to connect");
+pub async fn load_images(config: AppConfig, path: &str) {
+    let client = Client::with_uri_str(config.db_connection.clone())
+        .await
+        .expect("failed to connect");
     let db = client.database(DB_NAME);
     let collection: Collection<Image> = db.collection(COLL_NAME);
 
@@ -49,11 +51,11 @@ pub async fn load_images(path: &str, db_connection_url: &str) {
 
     info!("Loading images from {}", path);
 
-    _load_images(path, &collection).await;
+    _load_images(config, &collection, path).await;
 }
 
 #[async_recursion]
-async fn _load_images(path: &str, collection: &Collection<Image>) {
+async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &str) {
     // firstly list all the files in the path recursively
     // then check if the file is already in the database
     // if not, add it to the database
@@ -63,17 +65,19 @@ async fn _load_images(path: &str, collection: &Collection<Image>) {
         let entry_path = entry.path().clone();
         // print entry_path
         if entry_path.is_file() {
-
             // check if the file is an image jpg, jpeg, png
-            if !entry_path.to_str().unwrap().ends_with(".jpg") 
-                && !entry_path.to_str().unwrap().ends_with(".jpeg") 
-                    && !entry_path.to_str().unwrap().ends_with(".png") {
-                        continue;
-                    }
-
+            if !entry_path.to_str().unwrap().ends_with(".jpg")
+                && !entry_path.to_str().unwrap().ends_with(".jpeg")
+                && !entry_path.to_str().unwrap().ends_with(".png")
+            {
+                continue;
+            }
 
             // Firstly check if the image is already in the database
-            if let Ok(Some(_)) = collection.find_one(doc! { "i_path": entry_path.to_str().unwrap() }, None).await {
+            if let Ok(Some(_)) = collection
+                .find_one(doc! { "i_path": entry_path.to_str().unwrap() }, None)
+                .await
+            {
                 info!("Image {} already in database", entry_path.to_str().unwrap());
                 continue;
             }
@@ -83,27 +87,49 @@ async fn _load_images(path: &str, collection: &Collection<Image>) {
                 .read_from_container(&mut std::io::BufReader::new(file))
                 .unwrap();
 
-            // classify the image here!
-            let classification_result = classify_image(&entry_path.to_str().unwrap());
+            let classification_result =
+                classify_image(config.clone(), &entry_path.to_str().unwrap());
 
             let image = Image {
                 i_path: entry_path.to_str().unwrap().to_string(),
-                i_width: exif_data.get_field(exif::Tag::ImageWidth, exif::In::PRIMARY).map(
-                    |f| f.display_value().to_string()).unwrap_or_else(|| "0".to_string()).parse::<u32>().unwrap_or(0),
-                i_height: exif_data.get_field(exif::Tag::ImageLength, exif::In::PRIMARY).map(
-                    |f| f.display_value().to_string()).unwrap_or_else(|| "0".to_string()).parse::<u32>().unwrap_or(0),
-                i_longitude: exif_data.get_field(exif::Tag::GPSLongitude, exif::In::PRIMARY).map(
-                    |f| f.display_value().to_string()).unwrap_or_else(|| "0".to_string()),
-                i_latitude: exif_data.get_field(exif::Tag::GPSLatitude, exif::In::PRIMARY).map(
-                    |f| f.display_value().to_string()).unwrap_or_else(|| "0".to_string()),
-                i_altitude: exif_data.get_field(exif::Tag::GPSAltitude, exif::In::PRIMARY).map(
-                    |f| f.display_value().to_string()).unwrap_or_else(|| "0".to_string()).parse::<f64>().unwrap_or(0.0),
-                i_datetime: exif_data.get_field(exif::Tag::DateTime, exif::In::PRIMARY).map(
-                    |f| f.display_value().to_string()).unwrap_or_else(|| "0".to_string()), 
-                c_lens_make: exif_data.get_field(exif::Tag::Make, exif::In::PRIMARY).map(
-                    |f| f.display_value().to_string()).unwrap_or_else(|| "0".to_string()),
-                c_lens_model: exif_data.get_field(exif::Tag::Model, exif::In::PRIMARY).map(
-                    |f| f.display_value().to_string()).unwrap_or_else(|| "0".to_string()), 
+                i_width: exif_data
+                    .get_field(exif::Tag::ImageWidth, exif::In::PRIMARY)
+                    .map(|f| f.display_value().to_string())
+                    .unwrap_or_else(|| "0".to_string())
+                    .parse::<u32>()
+                    .unwrap_or(0),
+                i_height: exif_data
+                    .get_field(exif::Tag::ImageLength, exif::In::PRIMARY)
+                    .map(|f| f.display_value().to_string())
+                    .unwrap_or_else(|| "0".to_string())
+                    .parse::<u32>()
+                    .unwrap_or(0),
+                i_longitude: exif_data
+                    .get_field(exif::Tag::GPSLongitude, exif::In::PRIMARY)
+                    .map(|f| f.display_value().to_string())
+                    .unwrap_or_else(|| "0".to_string()),
+                i_latitude: exif_data
+                    .get_field(exif::Tag::GPSLatitude, exif::In::PRIMARY)
+                    .map(|f| f.display_value().to_string())
+                    .unwrap_or_else(|| "0".to_string()),
+                i_altitude: exif_data
+                    .get_field(exif::Tag::GPSAltitude, exif::In::PRIMARY)
+                    .map(|f| f.display_value().to_string())
+                    .unwrap_or_else(|| "0".to_string())
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+                i_datetime: exif_data
+                    .get_field(exif::Tag::DateTime, exif::In::PRIMARY)
+                    .map(|f| f.display_value().to_string())
+                    .unwrap_or_else(|| "0".to_string()),
+                c_lens_make: exif_data
+                    .get_field(exif::Tag::Make, exif::In::PRIMARY)
+                    .map(|f| f.display_value().to_string())
+                    .unwrap_or_else(|| "0".to_string()),
+                c_lens_model: exif_data
+                    .get_field(exif::Tag::Model, exif::In::PRIMARY)
+                    .map(|f| f.display_value().to_string())
+                    .unwrap_or_else(|| "0".to_string()),
                 classification_result: classification_result.clone(),
             };
 
@@ -115,12 +141,14 @@ async fn _load_images(path: &str, collection: &Collection<Image>) {
             generate_thumbnail(entry_path.to_str().unwrap(), &i_id);
 
             info!("Added image {} to database", entry_path.to_str().unwrap());
-
         } else if entry_path.is_dir() {
             // recursively call this function untill we reach files
-            _load_images(entry_path.to_str().unwrap(), collection).await;
+            _load_images(config.clone(), collection, entry_path.to_str().unwrap()).await;
         } else {
-            warn!("Not sure what you provied me here {}", entry_path.to_str().unwrap());
+            warn!(
+                "Not sure what you provied me here {}",
+                entry_path.to_str().unwrap()
+            );
         }
     }
 }
@@ -132,12 +160,26 @@ fn generate_thumbnail(image_path: &str, i_id: &str) -> bool {
     let aspect_ratio = img.cols() as f32 / img.rows() as f32;
 
     // determine the new width and height
-    let (new_width, new_height) = (THUMBNAIL_SIZE, (THUMBNAIL_SIZE as f32 / aspect_ratio) as u32);
+    let (new_width, new_height) = (
+        THUMBNAIL_SIZE,
+        (THUMBNAIL_SIZE as f32 / aspect_ratio) as u32,
+    );
 
     // create a new image with the new width and height
     let mut resized = Mat::default();
     let params: Vector<i32> = Vector::new();
-    resize(&img, &mut resized, Size::new(new_width.try_into().unwrap(), new_height.try_into().unwrap()), 0.0, 0.0, INTER_AREA).unwrap();
+    resize(
+        &img,
+        &mut resized,
+        Size::new(
+            new_width.try_into().unwrap(),
+            new_height.try_into().unwrap(),
+        ),
+        0.0,
+        0.0,
+        INTER_AREA,
+    )
+    .unwrap();
 
     let thumbnail_location: String = format!("{}{}{}", THUMBNAIL_LOCATION, i_id, ".jpg");
 
@@ -146,8 +188,8 @@ fn generate_thumbnail(image_path: &str, i_id: &str) -> bool {
     return true;
 }
 
-fn classify_image(image_path: &str) -> Vec<ClassificationResult> {
-    let output = Command::new(PYTHON_VENV_PATH)
+fn classify_image(config: AppConfig, image_path: &str) -> Vec<ClassificationResult> {
+    let output = Command::new(config.python_venv_path)
         .arg(PYTHON_CLASSIFICATION_SCRIPT)
         .arg("--image_file")
         .arg(image_path)
@@ -164,8 +206,8 @@ fn classify_image(image_path: &str) -> Vec<ClassificationResult> {
     }
 
     let output_string = String::from_utf8(output.stdout).unwrap();
-    let classification_result: Vec<ClassificationResult> = serde_json::from_str(&output_string)
-        .expect("Error while parsing classification result");
+    let classification_result: Vec<ClassificationResult> =
+        serde_json::from_str(&output_string).expect("Error while parsing classification result");
 
     return classification_result;
 }

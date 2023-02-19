@@ -1,13 +1,13 @@
-mod model;
 mod config;
+mod model;
 mod scan_im;
 
-use actix_web::{get, post, web, App, HttpResponse, HttpServer};
+use actix_rt::System;
 use actix_web::web::Json;
+use actix_web::{get, post, web, App, HttpResponse, HttpServer};
 use model::User;
 use mongodb::{bson::doc, options::IndexOptions, Client, Collection, IndexModel};
 use std::thread;
-use actix_rt::System;
 
 const DB_NAME: &str = "zyscan";
 const COLL_NAME: &str = "users";
@@ -16,7 +16,8 @@ const COLL_NAME: &str = "users";
 #[post("/add_user")]
 async fn add_user(client: web::Data<Client>, user_req: Json<User>) -> HttpResponse {
     let collection = client.database(DB_NAME).collection(COLL_NAME);
-    let result = collection.insert_one(user_req, None).await; match result {
+    let result = collection.insert_one(user_req, None).await;
+    match result {
         Ok(_) => HttpResponse::Ok().body("user added"),
         Err(err) => HttpResponse::InternalServerError().body(err.to_string()),
     }
@@ -56,24 +57,25 @@ async fn create_username_index(client: &Client) {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cfg: config::AppConfig = confy::load("zyscan").unwrap();
     confy::store("zyscan", &cfg).unwrap(); // stores the config file to ~/.config/zyscan/zyscan.yml
 
-    let client = Client::with_uri_str(cfg.db_connection).await.expect("failed to connect");
+    let client = Client::with_uri_str(cfg.db_connection)
+        .await
+        .expect("failed to connect");
     create_username_index(&client).await;
-    
+
     // Scan exif data in a seperate thread
-    thread::spawn(move ||{
+    thread::spawn(move || {
         let thread_cfg: config::AppConfig = confy::load("zyscan").unwrap();
-        for folder in thread_cfg.scan_folders {
-                let sys = System::new();
-                sys.block_on(scan_im::load_images(&folder, &thread_cfg.db_connection)); 
-                sys.run().unwrap();
+        for folder in &thread_cfg.scan_folders {
+            let sys = System::new();
+            sys.block_on(scan_im::load_images(thread_cfg.clone(), &folder));
+            sys.run().unwrap();
         }
     });
-    
+
     // This needs to run in the main thread
     HttpServer::new(move || {
         App::new()
