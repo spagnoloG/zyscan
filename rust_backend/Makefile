@@ -18,6 +18,10 @@ start_db:
 		docker run -d -p 27017:27017 --name mongodb_r mongo; \
 	fi
 
+lint:
+	@echo "Linting rust code"
+	@cargo clippy --fix
+
 stop_db:
 	@echo "Stopping the database"
 	docker stop mongodb_r

@@ -88,7 +88,7 @@ async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &
                 .unwrap();
 
             let classification_result =
-                classify_image(config.clone(), &entry_path.to_str().unwrap());
+                classify_image(config.clone(), entry_path.to_str().unwrap());
 
             let image = Image {
                 i_path: entry_path.to_str().unwrap().to_string(),
@@ -185,7 +185,7 @@ fn generate_thumbnail(image_path: &str, i_id: &str) -> bool {
 
     imwrite(&thumbnail_location, &resized, &params).unwrap();
 
-    return true;
+    true
 }
 
 fn classify_image(config: AppConfig, image_path: &str) -> Vec<ClassificationResult> {
@@ -209,5 +209,5 @@ fn classify_image(config: AppConfig, image_path: &str) -> Vec<ClassificationResu
     let classification_result: Vec<ClassificationResult> =
         serde_json::from_str(&output_string).expect("Error while parsing classification result");
 
-    return classification_result;
+    classification_result
 }

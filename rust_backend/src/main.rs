@@ -71,7 +71,7 @@ async fn main() -> std::io::Result<()> {
         let thread_cfg: config::AppConfig = confy::load("zyscan").unwrap();
         for folder in &thread_cfg.scan_folders {
             let sys = System::new();
-            sys.block_on(scan_im::load_images(thread_cfg.clone(), &folder));
+            sys.block_on(scan_im::load_images(thread_cfg.clone(), folder));
             sys.run().unwrap();
         }
     });
