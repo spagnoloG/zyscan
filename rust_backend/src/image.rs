@@ -6,14 +6,13 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use mongodb::{bson::doc, Client, Collection, options::FindOptions};
 use futures::stream::TryStreamExt;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use chrono::{DateTime, Utc};
-use futures::StreamExt;
-
+use std::io::Read;
 
 const DB_NAME: &str = "zyscan";
 const COLL_NAME: &str = "images";
-const MAJORITY_CLASS_PROBABILITY: f64 = 0.1;
+const MAJORITY_CLASS_PROBABILITY: f64 = 0.08;
 
 struct UtcDateTime(DateTime<Utc>);
 
@@ -57,14 +56,10 @@ async fn get_images(client: web::Data<Client>, params: web::Query<DateTimeQuery>
         .sort(doc! { "i_datetime": -1 })
         .build();
 
-    let mut stream = collection
+    let stream = collection
         .find(doc! { "i_datetime": { "$lt": dt } }, options)
         .await
         .expect("find should succeed");
-     
-    if stream.next().await.is_none() {
-        return HttpResponse::BadRequest().json("No images found for the class!");
-    }
 
     let mut images: Vec<Image> = Vec::new();
     let mut stream = stream.into_stream();
@@ -91,24 +86,26 @@ async fn get_images_by_class(client: web::Data<Client>, params: web::Query<Class
     let options = FindOptions::builder()
         .limit(50)
         .sort(doc! { "i_datetime": -1 })
-        .build();
+        .projection(
+            doc! {
+                "classification_result": 0,
+            }
+        ).build();
 
-    let mut stream = collection.find(
+    let stream = collection.find(
         doc! {
-            "classification_result.name": &params.class,
-            "$expr": {
-                "$gt": ["$classification_result.probability", MAJORITY_CLASS_PROBABILITY],
-                "i_datetime": { "$lt": dt }
+            "i_datetime": { "$lt": dt },
+            "classification_result": {
+                "$elemMatch": {
+                    "name": params.class.clone(),
+                    "prob": { "$gt": MAJORITY_CLASS_PROBABILITY }
+                }
             }
         },
         options,
         ).await
         .expect("find should succeed");
     
-    if stream.next().await.is_none() {
-        return HttpResponse::BadRequest().json("No images found for the class!");
-    }
-
     let mut images: Vec<Image> = Vec::new();
     let mut stream = stream.into_stream();
 
@@ -117,4 +114,66 @@ async fn get_images_by_class(client: web::Data<Client>, params: web::Query<Class
     }
 
     HttpResponse::Ok().json(images)    
+}
+
+
+#[derive(Deserialize, Serialize, Debug)]
+struct ClassObj {
+    name: String,
+}
+
+#[get("/images-by-class")]
+async fn get_images_by_class_html() -> HttpResponse {
+    let mut file = File::open(CLASSES_FILE).unwrap();
+    let mut data = String::new();
+    file.read_to_string(&mut data).unwrap();
+
+    let classes: Vec<ClassObj> = serde_json::from_str(&data).unwrap();
+    // Generate a html document contating the classes
+    let mut html = String::from("<html><body><ul>");
+    for class in classes {
+        html.push_str(&format!("<li><a href=\"/images-by-class/{}\">{}</a></li>", class.name, class.name));
+    }
+    html.push_str("</ul></body></html>");
+
+    HttpResponse::Ok().content_type("text/html").body(html)
+}
+
+
+#[get("/images-by-class/{class}")]
+async fn get_images_belonging_to_a_class_html(client: web::Data<Client>, class: web::Path<String>) -> HttpResponse {
+    // Generate a html document contating the images that belong to the class
+    let collection: Collection<Image> = client.database(DB_NAME).collection(COLL_NAME);
+    let options = FindOptions::builder()
+        .limit(50)
+        .sort(doc! { "i_datetime": -1 })
+        .projection(
+            doc! {
+                "classification_result": 0,
+            }
+        ).build();
+
+    let stream = collection.find(
+        doc! {
+            "classification_result": {
+                "$elemMatch": {
+                    "name": class.clone(),
+                    "prob": { "$gt": MAJORITY_CLASS_PROBABILITY }
+                }
+            }
+        },
+        options,
+        ).await
+        .expect("find should succeed");
+    
+    let mut stream = stream.into_stream();
+    // Do that in single line
+    let mut html = format!("<html><body><h1>Images belonging to class {}</h1><ul>", class.clone());
+
+    while let Some(image) = stream.try_next().await.unwrap() {
+        let filename = image.i_path.split('/').last().unwrap();
+        html.push_str(&format!("<li><a href=\"/images/{}\"><img src=\"/thumbnails/{}.jpg\"/></a></li>", filename, image._id));
+    }
+
+    HttpResponse::Ok().content_type("text/html").body(html)
 }

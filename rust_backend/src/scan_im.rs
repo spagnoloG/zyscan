@@ -26,6 +26,7 @@ pub struct ClassificationResult {
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Image {
+    pub _id: mongodb::bson::oid::ObjectId,
     pub i_path: String,
     pub i_width: u32,
     pub i_height: u32,
@@ -35,7 +36,7 @@ pub struct Image {
     pub i_datetime: MongoDateTime,
     pub c_lens_make: String,
     pub c_lens_model: String,
-    pub classification_result: Vec<ClassificationResult>,
+    pub classification_result: Option<Vec<ClassificationResult>>,
 }
 
 pub async fn load_images(config: AppConfig, path: &str) {
@@ -92,6 +93,7 @@ async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &
                 classify_image(config.clone(), entry_path.to_str().unwrap());
 
             let image = Image {
+                _id: mongodb::bson::oid::ObjectId::new(),
                 i_path: entry_path.to_str().unwrap().to_string(),
                 i_datetime: parse_exif_datetime(&exif_data),
                 i_width: exif_data
@@ -128,7 +130,7 @@ async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &
                     .get_field(exif::Tag::Model, exif::In::PRIMARY)
                     .map(|f| f.display_value().to_string())
                     .unwrap_or_else(|| "0".to_string()),
-                classification_result: classification_result.clone(),
+                classification_result: Some(classification_result.clone()),
             };
 
             // insert the image into the database and get the id

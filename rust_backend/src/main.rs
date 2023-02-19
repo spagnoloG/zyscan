@@ -42,7 +42,9 @@ async fn main() -> std::io::Result<()> {
             )
            .service(image::get_classes)
            .service(image::get_images)
-           .service(image::get_images_by_class);
+           .service(image::get_images_by_class)
+           .service(image::get_images_by_class_html)
+           .service(image::get_images_belonging_to_a_class_html);
         
         // Serve all the images from the config file
         for folder in &cfg.scan_folders {
