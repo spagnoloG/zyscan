@@ -1,6 +1,7 @@
 mod config;
 mod model;
 mod scan_im;
+mod image;
 
 use actix_rt::System;
 use actix_web::web::Json;
@@ -8,6 +9,8 @@ use actix_web::{get, post, web, App, HttpResponse, HttpServer};
 use model::User;
 use mongodb::{bson::doc, options::IndexOptions, Client, Collection, IndexModel};
 use std::thread;
+use scan_im::THUMBNAIL_LOCATION;
+use actix_files as fs;
 
 const DB_NAME: &str = "zyscan";
 const COLL_NAME: &str = "users";
@@ -58,6 +61,7 @@ async fn create_username_index(client: &Client) {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
     let cfg: config::AppConfig = confy::load("zyscan").unwrap();
     confy::store("zyscan", &cfg).unwrap(); // stores the config file to ~/.config/zyscan/zyscan.yml
 
@@ -78,11 +82,30 @@ async fn main() -> std::io::Result<()> {
 
     // This needs to run in the main thread
     HttpServer::new(move || {
-        App::new()
+        let mut app = App::new()
             .app_data(web::Data::new(client.clone()))
             .service(add_user)
             .service(get_user)
+            .service(
+                fs::Files::new("/thumbnails", THUMBNAIL_LOCATION)
+                    .show_files_listing()
+                    .use_last_modified(true),
+            )
+           .service(image::get_classes)
+           .service(image::get_images);
+        
+        // Serve all the images from the config file
+        for folder in &cfg.scan_folders {
+            app = app.service(
+                fs::Files::new("/images", folder)
+                    .show_files_listing()
+                    .use_last_modified(true),
+            );
+        }
+
+        app
     })
+
     .bind(("127.0.0.1", 8080))?
     .run()
     .await

@@ -9,13 +9,14 @@ use opencv::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
+use mongodb::bson::DateTime as MongoDateTime;
 
 const DB_NAME: &str = "zyscan";
 const COLL_NAME: &str = "images";
-const THUMBNAIL_LOCATION: &str = "./thumbnails/";
 const THUMBNAIL_SIZE: u32 = 100;
 const PYTHON_CLASSIFICATION_SCRIPT: &str = "./src_py/classify.py";
-const CLASSES_FILE: &str = "/home/gasperspagnolo/Documents/faks_git/diplomska-cv/rust_backend/assests/annotations/classes.json";
+pub const CLASSES_FILE: &str = "/home/gasperspagnolo/Documents/faks_git/diplomska-cv/rust_backend/assests/annotations/classes.json";
+pub const THUMBNAIL_LOCATION: &str = "./thumbnails/";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ClassificationResult {
@@ -31,7 +32,7 @@ pub struct Image {
     pub i_longitude: String,
     pub i_latitude: String,
     pub i_altitude: f64,
-    pub i_datetime: String,
+    pub i_datetime: MongoDateTime,
     pub c_lens_make: String,
     pub c_lens_model: String,
     pub classification_result: Vec<ClassificationResult>,
@@ -92,6 +93,7 @@ async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &
 
             let image = Image {
                 i_path: entry_path.to_str().unwrap().to_string(),
+                i_datetime: parse_exif_datetime(&exif_data),
                 i_width: exif_data
                     .get_field(exif::Tag::ImageWidth, exif::In::PRIMARY)
                     .map(|f| f.display_value().to_string())
@@ -118,10 +120,6 @@ async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &
                     .unwrap_or_else(|| "0".to_string())
                     .parse::<f64>()
                     .unwrap_or(0.0),
-                i_datetime: exif_data
-                    .get_field(exif::Tag::DateTime, exif::In::PRIMARY)
-                    .map(|f| f.display_value().to_string())
-                    .unwrap_or_else(|| "0".to_string()),
                 c_lens_make: exif_data
                     .get_field(exif::Tag::Make, exif::In::PRIMARY)
                     .map(|f| f.display_value().to_string())
@@ -151,6 +149,39 @@ async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &
             );
         }
     }
+}
+
+fn parse_exif_datetime(exif_data: &exif::Exif) -> MongoDateTime {
+    let mut timestamp = 0;
+    if let Some(field) = exif_data.get_field(exif::Tag::DateTime, exif::In::PRIMARY) {
+        match field.value {
+            exif::Value::Ascii(ref vec) if !vec.is_empty() => {
+                if let Ok(datetime) = exif::DateTime::from_ascii(&vec[0]) {
+                    // create a new chrono DateTime
+                    let datetime = chrono::NaiveDateTime::new(
+                        chrono::NaiveDate::from_ymd_opt(
+                            datetime.year as i32,
+                            datetime.month as u32,
+                            datetime.day as u32,
+                            ).unwrap_or_else(
+                                || chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()
+                                ),
+                                chrono::NaiveTime::from_hms_opt(
+                                    datetime.hour as u32,
+                                    datetime.minute as u32,
+                                    datetime.second as u32,
+                                    ).unwrap_or_else(
+                                        || chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap()
+                                        )
+                                );
+                    let datetime = chrono::DateTime::<chrono::Utc>::from_utc(datetime, chrono::Utc);
+                    timestamp = datetime.timestamp_millis();
+                }
+            },
+            _ => {},
+        }
+    }
+    MongoDateTime::from_millis((timestamp as u64).try_into().expect("Failed to convert timestamp to u64"))
 }
 
 fn generate_thumbnail(image_path: &str, i_id: &str) -> bool {
