@@ -1,5 +1,4 @@
 use crate::config::AppConfig;
-use async_recursion::async_recursion;
 use log::{error, info, warn};
 use mongodb::{bson::doc, Client, Collection};
 use opencv::core::{Mat, Size, Vector};
@@ -15,18 +14,18 @@ const DB_NAME: &str = "zyscan";
 const COLL_NAME: &str = "images";
 const THUMBNAIL_SIZE: u32 = 100;
 const PYTHON_CLASSIFICATION_SCRIPT: &str = "./src_py/classify.py";
-pub const CLASSES_FILE: &str = "/home/gasperspagnolo/Documents/faks_git/diplomska-cv/rust_backend/assests/annotations/classes.json";
 pub const THUMBNAIL_LOCATION: &str = "./thumbnails/";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub struct ClassificationResult {
-    pub name: String,
-    pub prob: f64,
+pub struct ClassificationScriptResult {
+    pub image_file: String,
+    pub milvus_id: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Image {
     pub _id: mongodb::bson::oid::ObjectId,
+    pub milvus_id: u64,
     pub i_path: String,
     pub i_width: u32,
     pub i_height: u32,
@@ -36,7 +35,6 @@ pub struct Image {
     pub i_datetime: MongoDateTime,
     pub c_lens_make: String,
     pub c_lens_model: String,
-    pub classification_result: Option<Vec<ClassificationResult>>,
 }
 
 pub async fn load_images(config: AppConfig) {
@@ -56,60 +54,42 @@ pub async fn load_images(config: AppConfig) {
     }
 }
 
-#[async_recursion]
-async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &str) {
+async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &str) -> () {
     // firstly list all the files in the path recursively
     // then check if the file is already in the database
     // if not, add it to the database
 
-    for entry in std::fs::read_dir(path).unwrap() {
-        let entry = entry.unwrap();
-        let entry_path = entry.path().clone();
-        // print entry_path
-        if entry_path.is_file() {
-
-            // check if file has at least the 400x400 resolution
-
-            // check if the file is an image jpg, jpeg, png
-            if !entry_path.to_str().unwrap().ends_with(".jpg")
-                && !entry_path.to_str().unwrap().ends_with(".jpeg")
-                && !entry_path.to_str().unwrap().ends_with(".png")
-            {
-                continue;
-            }
-
-
+    let csr: Vec<ClassificationScriptResult> = classify_images(config, path);
+    for entry in csr {
             // Firstly check if the image is already in the database
             if let Ok(Some(_)) = collection
-                .find_one(doc! { "i_path": entry_path.to_str().unwrap() }, None)
+                .find_one(doc! { "i_path": &entry.image_file }, None)
                 .await
             {
-                info!("Image {} already in database", entry_path.to_str().unwrap());
+                info!("Image {} already in database", entry.image_file);
                 continue;
             }
 
-            let file = std::fs::File::open(&entry_path).unwrap();
+            let file = std::fs::File::open(&entry.image_file).unwrap();
             let exif_data_result = exif::Reader::new()
                 .read_from_container(&mut std::io::BufReader::new(file));
             
             let exif_data = match exif_data_result {
                Ok(exif_data) => exif_data,
                Err(exif::Error::InvalidFormat(_)) => {
-                   warn!("Invalid exif format for file: {}", entry_path.to_str().unwrap());
+                   warn!("Invalid exif format for file: {}", entry.image_file);
                    continue;
                },
                Err(_) => {
-                   error!("Error while reading exif data for file: {}", entry_path.to_str().unwrap());
+                   error!("Error while reading fxif data for file: {}", entry.image_file);
                    continue;
                }
             };
 
-            let classification_result =
-                classify_image(config.clone(), entry_path.to_str().unwrap());
-
             let image = Image {
                 _id: mongodb::bson::oid::ObjectId::new(),
-                i_path: entry_path.to_str().unwrap().to_string(),
+                milvus_id: entry.milvus_id,
+                i_path: entry.image_file.clone(),
                 i_datetime: parse_exif_datetime(&exif_data),
                 i_width: exif_data
                     .get_field(exif::Tag::ImageWidth, exif::In::PRIMARY)
@@ -145,7 +125,6 @@ async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &
                     .get_field(exif::Tag::Model, exif::In::PRIMARY)
                     .map(|f| f.display_value().to_string())
                     .unwrap_or_else(|| "0".to_string()),
-                classification_result: Some(classification_result.clone()),
             };
 
             // insert the image into the database and get the id
@@ -153,18 +132,9 @@ async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &
             let i_id: String = ins_result.inserted_id.as_object_id().unwrap().to_hex();
 
             // Generate the thumbnail
-            generate_thumbnail(entry_path.to_str().unwrap(), &i_id);
+            generate_thumbnail(&entry.image_file, &i_id);
 
-            info!("Added image {} to database", entry_path.to_str().unwrap());
-        } else if entry_path.is_dir() {
-            // recursively call this function untill we reach files
-            _load_images(config.clone(), collection, entry_path.to_str().unwrap()).await;
-        } else {
-            warn!(
-                "Not sure what you provied me here {}",
-                entry_path.to_str().unwrap()
-            );
-        }
+            info!("Added image {} to database", entry.image_file);
     }
 }
 
@@ -236,25 +206,22 @@ fn generate_thumbnail(image_path: &str, i_id: &str) -> bool {
     true
 }
 
-fn classify_image(config: AppConfig, image_path: &str) -> Vec<ClassificationResult> {
+fn classify_images(config: AppConfig, images_dir: &str) -> Vec<ClassificationScriptResult> {
     let output = Command::new(config.python_venv_path)
         .arg(PYTHON_CLASSIFICATION_SCRIPT)
-        .arg("--image_file")
-        .arg(image_path)
-        .arg("--classes_file")
-        .arg(CLASSES_FILE)
+        .arg("--images_dir")
+        .arg(images_dir)
         .arg("--device")
         .arg("cuda")
         .output()
         .expect("failed to execute process");
 
     if !output.status.success() {
-        error!("Error while classifying image {}", image_path);
         error!("Error: {}", String::from_utf8_lossy(&output.stderr));
     }
 
     let output_string = String::from_utf8(output.stdout).unwrap();
-    let classification_result: Vec<ClassificationResult> =
+    let classification_result: Vec<ClassificationScriptResult> =
         serde_json::from_str(&output_string).expect("Error while parsing classification result");
 
     classification_result

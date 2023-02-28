@@ -14,6 +14,7 @@ from pymilvus import (
     Collection,
 )
 
+IS_FIRST_RUN = True
 
 def db_connect() -> None:
     try:
@@ -96,10 +97,8 @@ def euclidean_distance(x, y) -> float:
 
 def hellinger_distance(x, y) -> float:
     """ Hellinger distance between two vectors """
-    print(x.shape, y.shape)
     x = x.reshape(-1)
     y = y.reshape(-1)
-    print(x.shape, y.shape)
     return np.sqrt(0.5 * np.sum(np.square(np.sqrt(x) - np.sqrt(y))))
 
 
@@ -114,13 +113,18 @@ def intersection_distance(x, y) -> float:
 
 
 def log_processed_image(image_file: str, milvus_id: int) -> None:
+    global IS_FIRST_RUN
     """Log processed image."""
     data = {
         "image_file": image_file,
-        "mivlus_id": milvus_id
+        "milvus_id": milvus_id
     }
     str_json = json.dumps(data)
-    print(str_json, end=",")
+    if IS_FIRST_RUN:
+        print(str_json, end="")
+        IS_FIRST_RUN = False
+    else:
+        print("," + str_json, end="")
 
 
 def classify_image(image_file: str, args: dict) -> bool:
