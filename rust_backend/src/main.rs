@@ -24,11 +24,9 @@ async fn main() -> std::io::Result<()> {
     // Scan exif data in a seperate thread
     thread::spawn(move || {
         let thread_cfg: config::AppConfig = confy::load("zyscan").unwrap();
-        for folder in &thread_cfg.scan_folders {
-            let sys = System::new();
-            sys.block_on(scan_im::load_images(thread_cfg.clone(), folder));
-            sys.run().unwrap();
-        }
+        let sys = System::new();
+        sys.block_on(scan_im::load_images(thread_cfg.clone()));
+        sys.run().unwrap();
     });
 
     // This needs to run in the main thread

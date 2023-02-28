@@ -24,7 +24,8 @@ impl ::std::default::Default for AppConfig {
         AppConfig {
             db_connection: "mongodb://localhost:27017".to_string(),
             db_name: "zyscan".to_string(),
-            scan_folders: vec!["/home/gasperspagnolo/Nextcloud/InstantUpload/Camera/".to_string()],
+            scan_folders: vec!["/home/gasperspagnolo/Nextcloud/InstantUpload/Camera/".to_string(),
+                                "/home/gasperspagnolo/Nextcloud/InstantUpload/Google Foto/".to_string()],
             python_venv_path: "/home/gasperspagnolo/miniconda3/envs/zyscan/bin/python".to_string(),
         }
     }

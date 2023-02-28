@@ -5,18 +5,68 @@ import json
 import clip
 from PIL import Image
 import torch
+import numpy as np
+
+from pymilvus import (
+    connections,
+    utility,
+    FieldSchema, CollectionSchema, DataType,
+    Collection,
+)
+
+
+def db_connect() -> None:
+    try:
+        connections.connect("default", host="localhost", port="19530")
+    except Exception as e:
+        print(e)
+        exit(1)
+
+
+def insert_image_into_db(db, image, image_vector) -> int:
+    """Insert image into Milvus DB"""
+    fields = [
+        FieldSchema(
+            name="pk",
+            dtype=DataType.INT64,
+            is_primary=True,
+            auto_id=True),
+        FieldSchema(
+            name="image_embedding",
+            dtype=DataType.FLOAT_VECTOR,
+            dim=512),
+    ]
+    schema = CollectionSchema(
+        fields, "Collection consisting of image embeddings")
+
+    z_images_collection = Collection(
+        "z_images", schema, consistency_level="Strong")
+
+    status = z_images_collection.insert([image_vector])
+
+    z_images_collection.flush()
+
+    if status.succ_count == 1:
+        return status.primary_keys[0]
+    else:
+        return 1
 
 
 def load_classes(classes_file: str, device: str) \
-    -> tuple[torch.Tensor, list[str]]:
+        -> tuple[torch.Tensor, list[str]]:
     """Load classes from a JSON file."""
     classes_arr = []
     with open(classes_file, 'r') as f:
         classes = json.load(f)
+        counter = 0
         for c in classes:
+            counter += 1
             classes_arr.append(c['name'])
+
+        print("Number of classes", counter)
     try:
         text_classes = clip.tokenize(classes_arr).to(device)
+        print(text_classes.shape)
     except ValueError:
         raise ValueError(f"Invalid classes file: {classes_file}")
     return text_classes, classes_arr
@@ -25,64 +75,138 @@ def load_classes(classes_file: str, device: str) \
 def load_image(image_file: str, device: str, PREPROCESS) -> torch.Tensor:
     """Load image from a file."""
     try:
-        image = PREPROCESS(Image.open(image_file)).unsqueeze(0).to(device)
+        img = Image.open(image_file)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+
+        # Return empty tensor if image is too small
+        if img.size[0] < 400 or img.size[1] < 400:
+            return torch.empty(0)
+
+        image = PREPROCESS(img).unsqueeze(0).to(device)
     except ValueError:
         raise ValueError(f"Invalid image file: {image_file}")
     return image
 
 
-def classify_image(image_file: str, classes_file: str,
-                   device: str) -> torch.Tensor:
+def euclidean_distance(x, y) -> float:
+    """ Euclidean distance between two vectors """
+    return np.sqrt(np.sum(np.square(x - y)))
+
+
+def hellinger_distance(x, y) -> float:
+    """ Hellinger distance between two vectors """
+    print(x.shape, y.shape)
+    x = x.reshape(-1)
+    y = y.reshape(-1)
+    print(x.shape, y.shape)
+    return np.sqrt(0.5 * np.sum(np.square(np.sqrt(x) - np.sqrt(y))))
+
+
+def chi_square_distance(x, y) -> float:
+    """ Chi-square distance between two vectors """
+    return 0.5 * np.sum(np.square(x - y) / (x + y + np.finfo(float).eps))
+
+
+def intersection_distance(x, y) -> float:
+    """ Intersection distance between two vectors """
+    return (1 - np.sum(np.minimum(x, y)))
+
+
+def log_processed_image(image_file: str, milvus_id: int) -> None:
+    """Log processed image."""
+    data = {
+        "image_file": image_file,
+        "mivlus_id": milvus_id
+    }
+    str_json = json.dumps(data)
+    print(str_json, end=",")
+
+
+def classify_image(image_file: str, args: dict) -> bool:
     """Classify image."""
     try:
-        MODEL, PREPROCESS = clip.load("ViT-B/32", device=device)
+        MODEL, PREPROCESS = clip.load("ViT-B/32", device=args.device)
     except ValueError:
-        raise ValueError(f"Invalid device: {device}")
+        raise ValueError(f"Invalid device: {args.device}")
 
-    image = load_image(image_file, device, PREPROCESS)
-    text_classes, ascii_classes = load_classes(classes_file, device)
+    image = load_image(image_file, args.device, PREPROCESS)
+    # The image did not meeet the minimum size requirements
+    if image.shape[0] == 0:
+        return True
 
     try:
         with torch.no_grad():
             image_features = MODEL.encode_image(image)
-            text_features = MODEL.encode_text(text_classes)
-            logits_per_image, logits_per_text = MODEL(image, text_classes)
-            probs = logits_per_image.softmax(dim=-1).cpu().numpy()
+
     except ValueError:
         raise ValueError(f"Invalid image file: {image_file}")
 
-    # Combine probabilities with class names
-    probs = list(zip(ascii_classes, probs[0]))
-    # Sort by probability
-    probs.sort(key=lambda x: x[1], reverse=True)
-    return probs
+    id = insert_image_into_db(
+        utility,
+        image_file,
+        image_features.cpu().numpy())
+    if id == 1:
+        return False
+
+    log_processed_image(image_file, id)
+
+    return True
+
+
+def traverse_images(images_dir: str, args: dict) -> bool:
+    """Traverse images directory."""
+    traverse_images_recursively(images_dir, args)
+    return True
+
+
+def traverse_images_recursively(images_dir: str, args: dict):
+    """Traverse images directory recursively."""
+
+    for f in os.listdir(images_dir):
+        if os.path.isdir(os.path.join(images_dir, f)):
+            traverse_images_recursively(
+                os.path.join(images_dir, f), args)
+        # The file is an image, classify it
+        else:
+            if f.endswith(".jpg") or f.endswith(".png") or f.endswith(".jpeg"):
+                if not classify_image(os.path.join(images_dir, f), args):
+                    raise ValueError("Failed to classify image.")
 
 
 def main() -> None:
+    """Main function."""
     parser = ArgumentParser()
-    parser.add_argument('--image_file', type=str , help='Absolute path to image file.', required=True)
-    parser.add_argument('--classes_file', type=str, help='Absolute path to classes file.', required=True)
-    parser.add_argument('--device', type=str, default="cpu", help='Device to use for classification.', required=False)
+    parser.add_argument(
+        '--images_dir',
+        type=str,
+        help='Absolute path to images directory..',
+        required=True)
+    parser.add_argument(
+        '--device',
+        type=str,
+        default="cpu",
+        help='Device to use for classification.',
+        required=False)
 
     args = parser.parse_args()
 
-    if not os.path.isfile(args.image_file):
-        raise ValueError(f"Invalid image file: {args.image_file}")
-    if not os.path.isfile(args.classes_file):
-        raise ValueError(f"Invalid classes file:{args.classes_file}")
+    if not os.path.exists(args.images_dir):
+        raise ValueError(f"Invalid images directory: {args.images_dir}")
     if args.device not in ["cpu", "cuda"]:
-        raise ValueError(f"Invalid device: {args.device}") 
+        raise ValueError(f"Invalid device: {args.device}")
     if args.device == "cuda" and not torch.cuda.is_available():
         raise ValueError("CUDA is not available on this device.")
 
-    probs = classify_image(args.image_file, args.classes_file, args.device)
+    db_connect()
 
-    res_out = []
-    for name, prob in probs:
-        res_out.append({"name": name.strip(), "prob": float(prob)})
-
-    # Print in utf-8 json format
-    print(json.dumps(res_out, ensure_ascii=False))
+    # Just to format the output
+    print("[", end="")
+    if not traverse_images(args.images_dir, args):
+        raise ValueError("something did not go to plan :(")
+    else:
+        print("]")
+        return True
 
 
 if __name__ == "__main__":

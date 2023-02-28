@@ -39,7 +39,7 @@ pub struct Image {
     pub classification_result: Option<Vec<ClassificationResult>>,
 }
 
-pub async fn load_images(config: AppConfig, path: &str) {
+pub async fn load_images(config: AppConfig) {
     let client = Client::with_uri_str(config.db_connection.clone())
         .await
         .expect("failed to connect");
@@ -51,9 +51,9 @@ pub async fn load_images(config: AppConfig, path: &str) {
         std::fs::create_dir(THUMBNAIL_LOCATION).unwrap();
     }
 
-    info!("Loading images from {}", path);
-
-    _load_images(config, &collection, path).await;
+    for folder in &config.scan_folders {
+        _load_images(config.clone(), &collection, folder).await;
+    }
 }
 
 #[async_recursion]
@@ -67,6 +67,9 @@ async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &
         let entry_path = entry.path().clone();
         // print entry_path
         if entry_path.is_file() {
+
+            // check if file has at least the 400x400 resolution
+
             // check if the file is an image jpg, jpeg, png
             if !entry_path.to_str().unwrap().ends_with(".jpg")
                 && !entry_path.to_str().unwrap().ends_with(".jpeg")
@@ -74,6 +77,7 @@ async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &
             {
                 continue;
             }
+
 
             // Firstly check if the image is already in the database
             if let Ok(Some(_)) = collection
@@ -85,9 +89,20 @@ async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &
             }
 
             let file = std::fs::File::open(&entry_path).unwrap();
-            let exif_data = exif::Reader::new()
-                .read_from_container(&mut std::io::BufReader::new(file))
-                .unwrap();
+            let exif_data_result = exif::Reader::new()
+                .read_from_container(&mut std::io::BufReader::new(file));
+            
+            let exif_data = match exif_data_result {
+               Ok(exif_data) => exif_data,
+               Err(exif::Error::InvalidFormat(_)) => {
+                   warn!("Invalid exif format for file: {}", entry_path.to_str().unwrap());
+                   continue;
+               },
+               Err(_) => {
+                   error!("Error while reading exif data for file: {}", entry_path.to_str().unwrap());
+                   continue;
+               }
+            };
 
             let classification_result =
                 classify_image(config.clone(), entry_path.to_str().unwrap());

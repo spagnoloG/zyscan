@@ -12,7 +12,7 @@ use std::io::Read;
 
 const DB_NAME: &str = "zyscan";
 const COLL_NAME: &str = "images";
-const MAJORITY_CLASS_PROBABILITY: f64 = 0.08;
+const MAJORITY_CLASS_PROBABILITY: f64 = 0.4;
 
 struct UtcDateTime(DateTime<Utc>);
 
@@ -145,7 +145,6 @@ async fn get_images_belonging_to_a_class_html(client: web::Data<Client>, class: 
     // Generate a html document contating the images that belong to the class
     let collection: Collection<Image> = client.database(DB_NAME).collection(COLL_NAME);
     let options = FindOptions::builder()
-        .limit(50)
         .sort(doc! { "i_datetime": -1 })
         .projection(
             doc! {
