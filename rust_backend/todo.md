@@ -5,5 +5,5 @@
 - [x] Print the image file path and the milvus id back to the rust code
 
 ## Rust part
-- [ ] Parse all the files and put them into the mongodb (create a new serializable struct)
-- [ ] Extract milvus id, let the mongoid be the same as id of mivus one
+- [x] Parse all the files and put them into the mongodb (create a new serializable struct)
+- [x] Extract milvus id, let the mongoid be the same as id of mivus one

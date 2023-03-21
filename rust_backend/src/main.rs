@@ -22,12 +22,13 @@ async fn main() -> std::io::Result<()> {
         .expect("failed to connect");
 
     // Scan exif data in a seperate thread
-    thread::spawn(move || {
-        let thread_cfg: config::AppConfig = confy::load("zyscan").unwrap();
-        let sys = System::new();
-        sys.block_on(scan_im::load_images(thread_cfg.clone()));
-        sys.run().unwrap();
-    });
+    // PAUSE FOR NOW
+    //thread::spawn(move || {
+    //    let thread_cfg: config::AppConfig = confy::load("zyscan").unwrap();
+    //    let sys = System::new();
+    //    sys.block_on(scan_im::load_images(thread_cfg));
+    //    sys.run().unwrap();
+    //});
 
     // This needs to run in the main thread
     HttpServer::new(move || {

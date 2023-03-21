@@ -54,7 +54,7 @@ pub async fn load_images(config: AppConfig) {
     }
 }
 
-async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &str) -> () {
+async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &str) {
     // firstly list all the files in the path recursively
     // then check if the file is already in the database
     // if not, add it to the database
@@ -117,7 +117,7 @@ async fn _load_images(config: AppConfig, collection: &Collection<Image>, path: &
                     .unwrap_or_else(|| "0".to_string())
                     .parse::<f64>()
                     .unwrap_or(0.0),
-                c_lens_make: exif_data
+                    c_lens_make: exif_data
                     .get_field(exif::Tag::Make, exif::In::PRIMARY)
                     .map(|f| f.display_value().to_string())
                     .unwrap_or_else(|| "0".to_string()),
