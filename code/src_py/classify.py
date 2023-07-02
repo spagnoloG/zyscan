@@ -6,15 +6,19 @@ import clip
 from PIL import Image
 import torch
 import numpy as np
+from typing import List
 
 from pymilvus import (
     connections,
     utility,
-    FieldSchema, CollectionSchema, DataType,
+    FieldSchema,
+    CollectionSchema,
+    DataType,
     Collection,
 )
 
 IS_FIRST_RUN = True
+
 
 def db_connect() -> None:
     try:
@@ -27,21 +31,12 @@ def db_connect() -> None:
 def insert_image_into_db(db, image, image_vector) -> int:
     """Insert image into Milvus DB"""
     fields = [
-        FieldSchema(
-            name="pk",
-            dtype=DataType.INT64,
-            is_primary=True,
-            auto_id=True),
-        FieldSchema(
-            name="image_embedding",
-            dtype=DataType.FLOAT_VECTOR,
-            dim=512),
+        FieldSchema(name="pk", dtype=DataType.INT64, is_primary=True, auto_id=True),
+        FieldSchema(name="image_embedding", dtype=DataType.FLOAT_VECTOR, dim=512),
     ]
-    schema = CollectionSchema(
-        fields, "Collection consisting of image embeddings")
+    schema = CollectionSchema(fields, "Collection consisting of image embeddings")
 
-    z_images_collection = Collection(
-        "z_images", schema, consistency_level="Strong")
+    z_images_collection = Collection("z_images", schema, consistency_level="Strong")
 
     status = z_images_collection.insert([image_vector])
 
@@ -53,16 +48,15 @@ def insert_image_into_db(db, image, image_vector) -> int:
         return 1
 
 
-def load_classes(classes_file: str, device: str) \
-        -> tuple[torch.Tensor, list[str]]:
+def load_classes(classes_file: str, device: str) -> tuple[torch.Tensor, list[str]]:
     """Load classes from a JSON file."""
     classes_arr = []
-    with open(classes_file, 'r') as f:
+    with open(classes_file, "r") as f:
         classes = json.load(f)
         counter = 0
         for c in classes:
             counter += 1
-            classes_arr.append(c['name'])
+            classes_arr.append(c["name"])
 
         print("Number of classes", counter)
     try:
@@ -91,34 +85,31 @@ def load_image(image_file: str, device: str, PREPROCESS) -> torch.Tensor:
 
 
 def euclidean_distance(x, y) -> float:
-    """ Euclidean distance between two vectors """
+    """Euclidean distance between two vectors"""
     return np.sqrt(np.sum(np.square(x - y)))
 
 
 def hellinger_distance(x, y) -> float:
-    """ Hellinger distance between two vectors """
+    """Hellinger distance between two vectors"""
     x = x.reshape(-1)
     y = y.reshape(-1)
     return np.sqrt(0.5 * np.sum(np.square(np.sqrt(x) - np.sqrt(y))))
 
 
 def chi_square_distance(x, y) -> float:
-    """ Chi-square distance between two vectors """
+    """Chi-square distance between two vectors"""
     return 0.5 * np.sum(np.square(x - y) / (x + y + np.finfo(float).eps))
 
 
 def intersection_distance(x, y) -> float:
-    """ Intersection distance between two vectors """
-    return (1 - np.sum(np.minimum(x, y)))
+    """Intersection distance between two vectors"""
+    return 1 - np.sum(np.minimum(x, y))
 
 
 def log_processed_image(image_file: str, milvus_id: int) -> None:
     global IS_FIRST_RUN
     """Log processed image."""
-    data = {
-        "image_file": image_file,
-        "milvus_id": milvus_id
-    }
+    data = {"image_file": image_file, "milvus_id": milvus_id}
     str_json = json.dumps(data)
     if IS_FIRST_RUN:
         print(str_json, end="")
@@ -127,71 +118,87 @@ def log_processed_image(image_file: str, milvus_id: int) -> None:
         print("," + str_json, end="")
 
 
-def classify_image(image_file: str, args: dict) -> bool:
-    """Classify image."""
+def gather_image_paths(images_dir: str) -> List[str]:
+    """Recursively gather image paths from a directory."""
+    image_files = []
+    for f in os.listdir(images_dir):
+        path = os.path.join(images_dir, f)
+        if os.path.isdir(path):
+            image_files.extend(gather_image_paths(path))
+        elif f.endswith((".jpg", ".png", ".jpeg")):
+            image_files.append(path)
+    return image_files
+
+
+def classify_images(image_files: List[str], args: dict) -> bool:
+    """Classify images."""
+    print(f"Classifying {len(image_files)} images...")
+
     try:
         MODEL, PREPROCESS = clip.load("ViT-B/32", device=args.device)
     except ValueError:
         raise ValueError(f"Invalid device: {args.device}")
 
-    image = load_image(image_file, args.device, PREPROCESS)
-    # The image did not meeet the minimum size requirements
-    if image.shape[0] == 0:
-        return True
+    images = []
+    for image_file in image_files:
+        image = load_image(image_file, args.device, PREPROCESS)
+        # The image did not meet the minimum size requirements
+        if image.shape[0] == 0:
+            return True
+        images.append(image)
+
+    # Stack images into a single tensor
+    images_tensor = torch.stack(images).squeeze()
 
     try:
         with torch.no_grad():
-            image_features = MODEL.encode_image(image)
-
+            image_features = MODEL.encode_image(images_tensor)
     except ValueError:
-        raise ValueError(f"Invalid image file: {image_file}")
+        raise ValueError(f"Invalid image file: {image_files}")
 
-    id = insert_image_into_db(
-        utility,
-        image_file,
-        image_features.cpu().numpy())
-    if id == 1:
-        return False
+    for image_file, img_features in zip(image_files, image_features):
+        # id = insert_image_into_db(
+        #     utility,
+        #     image_file,
+        #     img_features.cpu().numpy())
+        # if id == 1:
+        #     return False
 
-    log_processed_image(image_file, id)
+        img_id = 420
+        log_processed_image(image_file, img_id)
 
     return True
 
 
-def traverse_images(images_dir: str, args: dict) -> bool:
-    """Traverse images directory."""
-    traverse_images_recursively(images_dir, args)
+def traverse_and_classify_images(
+    images_dir: str, args: dict, batch_size: int = 32
+) -> bool:
+    """Traverse images directory and classify images in batches."""
+    image_files = gather_image_paths(images_dir)
+    for i in range(0, len(image_files), batch_size):
+        batch = image_files[i : i + batch_size]
+        print(f"Processing batch from {i} to {i+len(batch)}")
+        if not classify_images(batch, args):
+            raise ValueError("Failed to classify image.")
     return True
-
-
-def traverse_images_recursively(images_dir: str, args: dict):
-    """Traverse images directory recursively."""
-
-    for f in os.listdir(images_dir):
-        if os.path.isdir(os.path.join(images_dir, f)):
-            traverse_images_recursively(
-                os.path.join(images_dir, f), args)
-        # The file is an image, classify it
-        else:
-            if f.endswith(".jpg") or f.endswith(".png") or f.endswith(".jpeg"):
-                if not classify_image(os.path.join(images_dir, f), args):
-                    raise ValueError("Failed to classify image.")
 
 
 def main() -> None:
     """Main function."""
     parser = ArgumentParser()
     parser.add_argument(
-        '--images_dir',
+        "--images_dir",
         type=str,
-        help='Absolute path to images directory..',
-        required=True)
+        help="Absolute path to images directory..",
+        required=True,
+    )
     parser.add_argument(
-        '--device',
+        "--device",
         type=str,
         default="cpu",
-        help='Device to use for classification.',
-        required=False)
+        help="Device to use for classification.",
+        required=False,
+    )
 
     args = parser.parse_args()
 
@@ -202,11 +209,13 @@ def main() -> None:
     if args.device == "cuda" and not torch.cuda.is_available():
         raise ValueError("CUDA is not available on this device.")
 
-    db_connect()
+    # db_connect()
+    print(args.images_dir)
+    print(args)
 
     # Just to format the output
     print("[", end="")
-    if not traverse_images(args.images_dir, args):
+    if not traverse_and_classify_images(args.images_dir, args):
         raise ValueError("something did not go to plan :(")
     else:
         print("]")

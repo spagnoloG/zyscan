@@ -42,6 +42,16 @@ services:
       - "etcd"
       - "minio"
 
+  attu:
+    image: zilliz/attu:v2.2.6
+    ports:
+      - "8000:3000"
+    environment:
+      - MILVUS_URL=standalone:19530
+    depends_on:
+      - "standalone"
+
 networks:
   default:
     name: milvus
+

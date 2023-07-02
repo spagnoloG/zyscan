@@ -19,8 +19,9 @@ start_db:
 	fi
 
 lint:
-	@echo "Linting rust code"
-	@cargo clippy --fix
+	@echo "Linting code"
+	#@cargo clippy --fix ./src/*.rs
+	@black ./src_py/*.py
 
 stop_db:
 	@echo "Stopping the database"

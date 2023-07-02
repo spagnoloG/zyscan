@@ -3,19 +3,20 @@ from argparse import ArgumentParser
 import clip
 import torch
 from pymilvus import (
-        connections,
-        FieldSchema,
-        CollectionSchema,
-        DataType,
-        Collection,
+    connections,
+    FieldSchema,
+    CollectionSchema,
+    DataType,
+    Collection,
 )
 
-_METRIC_TYPE = 'L2'
-_INDEX_TYPE = 'IVF_FLAT'
+_METRIC_TYPE = "L2"
+_INDEX_TYPE = "IVF_FLAT"
 _NLIST = 1024
 _NPROBE = 16
 _TOPK = 3
 _VECTOR_FIELD = "image_embedding"
+
 
 def db_connect() -> None:
     try:
@@ -24,8 +25,9 @@ def db_connect() -> None:
         print(e)
         exit(1)
 
+
 def embed_query(args: dict) -> torch.Tensor:
-    """ Process input string """
+    """Process input string"""
     try:
         MODEL, PREPROCESS = clip.load("ViT-B/32", device=args.device)
     except Exception as e:
@@ -45,7 +47,7 @@ def embed_query(args: dict) -> torch.Tensor:
 
 
 def search_db(text_features: torch.Tensor, args: dict) -> list:
-    """ Search database for similar images """
+    """Search database for similar images"""
     z_images_collection = Collection(name="z_images")
 
     ### CREATE INDEX ###
@@ -64,16 +66,14 @@ def search_db(text_features: torch.Tensor, args: dict) -> list:
     # Search in the milvus db for the similar vectors
     try:
         search_param = {
-                "data": [text_features],
-                "anns_field": _VECTOR_FIELD,
-                "param": {"metric_type": _METRIC_TYPE, "params": {"nprobe": _NPROBE}},
-                "limit": _TOPK,
-                "expr": "id_field >= 0"
+            "data": [text_features],
+            "anns_field": _VECTOR_FIELD,
+            "param": {"metric_type": _METRIC_TYPE, "params": {"nprobe": _NPROBE}},
+            "limit": _TOPK,
+            "expr": "id_field >= 0",
         }
 
-        results = z_images_collection.search(
-                **search_param
-        )
+        results = z_images_collection.search(**search_param)
         for i, result in enumerate(results):
             print("\nSearch result for {}th vector: ".format(i))
             for j, res in enumerate(result):
@@ -89,24 +89,28 @@ def create_index(collection, filed_name):
     index_param = {
         "index_type": _INDEX_TYPE,
         "params": {"nlist": _NLIST},
-        "metric_type": _METRIC_TYPE}
+        "metric_type": _METRIC_TYPE,
+    }
     collection.create_index(filed_name, index_param)
     print("\nCreated index:\n{}".format(collection.index().params))
 
+
 def main():
-    """ Main function """
+    """Main function"""
     parser = ArgumentParser()
     parser.add_argument(
-        '--user_query',
+        "--user_query",
         type=str,
-        help='Absolute path to images directory..',
-        required=True)
+        help="Absolute path to images directory..",
+        required=True,
+    )
     parser.add_argument(
-        '--device',
+        "--device",
         type=str,
         default="cpu",
-        help='Device to use for classification.',
-        required=False)
+        help="Device to use for classification.",
+        required=False,
+    )
 
     args = parser.parse_args()
     if args.device not in ["cpu", "cuda"]:
