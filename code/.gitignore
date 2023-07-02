@@ -1,0 +1,5 @@
+thumbnails/*
+target/*
+Cargo.lock
+.venv/*
+
